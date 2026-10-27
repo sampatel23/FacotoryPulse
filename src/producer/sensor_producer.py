@@ -22,7 +22,7 @@ from kafka.errors import KafkaError
 # Kafka is exposed to Windows on port 29092 in compose.yaml.
 KAFKA_BOOTSTRAP_SERVERS = "127.0.0.1:29092"
 KAFKA_TOPIC = "sensor.raw"
-MACHINE_ID = "MACHINE-001"
+MACHINE_IDS = ["MACHINE-001", "MACHINE-002", "MACHINE-003"]
 
 
 def create_producer():
@@ -35,24 +35,30 @@ def create_producer():
     )
 
 
-def generate_reading(tick):
-    """Generate one simulated sensor reading with gradual degradation."""
+def generate_reading(tick, machine_id):
+    """Generate simulated readings for a particular machine."""
 
-    # Increase degradation slowly, then reset to simulate a maintenance cycle.
+    # Give each simulated machine a different operating profile.
+    profiles = {
+        "MACHINE-001": {"temp": 0.0, "rpm": 0.0, "torque": 0.0},
+        "MACHINE-002": {"temp": 3.0, "rpm": -80.0, "torque": 5.0},
+        "MACHINE-003": {"temp": 6.0, "rpm": -150.0, "torque": 10.0},
+    }
+
+    profile = profiles[machine_id]
+
+    # Increase degradation gradually, then reset to simulate maintenance.
     degradation = (tick % 120) / 120.0
 
-    # Add realistic small fluctuations around normal operating values.
-    air_temp = random.uniform(295.0, 299.0) + degradation * 4.0
+    air_temp = random.uniform(295.0, 299.0) + degradation * 4.0 + profile["temp"]
     process_temp = air_temp + random.uniform(8.0, 12.0) + degradation * 5.0
-    rpm = random.uniform(1400.0, 1600.0) - degradation * 180.0
-    torque = random.uniform(35.0, 45.0) + degradation * 22.0
+    rpm = random.uniform(1400.0, 1600.0) - degradation * 180.0 + profile["rpm"]
+    torque = random.uniform(35.0, 45.0) + degradation * 22.0 + profile["torque"]
     tool_wear = min(240.0, tick * 0.5 + random.uniform(0.0, 1.0))
 
-    # These two signals are synthetic proxies, not AI4I benchmark measurements.
     vibration = random.uniform(1.0, 2.5) + degradation * 5.0
     hydraulic_pressure = random.uniform(85.0, 100.0) - degradation * 20.0
 
-    # Simple demo rules to label simulated abnormal operating conditions.
     if process_temp > 310.0:
         fault_label = "Heat Dissipation"
     elif torque > 55.0 or hydraulic_pressure < 75.0:
@@ -65,7 +71,7 @@ def generate_reading(tick):
         fault_label = "NORMAL"
 
     return {
-        "machine_id": MACHINE_ID,
+        "machine_id": machine_id,
         "machine_type": "M",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "air_temp_K": round(air_temp, 2),
@@ -93,21 +99,20 @@ def main():
         tick = 0
 
         while True:
-            reading = generate_reading(tick)
+            for machine_id in MACHINE_IDS:
+                reading = generate_reading(tick, machine_id)
 
-            # Send the reading to Kafka, keyed by machine ID.
             future = producer.send(
                 KAFKA_TOPIC,
                 key=reading["machine_id"].encode("utf-8"),
                 value=reading,
             )
 
-            # Wait for broker acknowledgement so send errors are visible.
             metadata = future.get(timeout=10)
 
             print(
-                f"Message sent | topic={metadata.topic} "
-                f"partition={metadata.partition} "
+                f"Machine={machine_id} | "
+                f"topic={metadata.topic} | "
                 f"offset={metadata.offset} | "
                 f"temp={reading['process_temp_K']} K | "
                 f"RPM={reading['rotational_speed_rpm']} | "
@@ -115,6 +120,7 @@ def main():
             )
 
             tick += 1
+
             time.sleep(1)
 
     except KeyboardInterrupt:
